@@ -1,12 +1,13 @@
+use crate::errors::Errors;
 use scraper::{Html, Selector};
 
-use crate::errors::Errors;
-
+#[derive(Debug)]
 pub struct ContentParser {
     pub title_seclector: Selector,
     pub link_selector: Selector,
 }
 
+#[derive(Debug)]
 pub struct ParsedContent {
     pub links: Vec<String>,
     pub title: String,

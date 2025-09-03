@@ -1,14 +1,16 @@
-use std::collections::HashMap;
-
-use reqwest::StatusCode;
-
 use crate::errors::Errors;
+use crate::parser::ContentParser;
+use reqwest::Client;
+use reqwest::StatusCode;
+use std::collections::HashMap;
+use std::pin::Pin;
 
 #[derive(Debug)]
 pub struct Crawler {
     seed_urls: Vec<String>,
-    max_depth: u32,
+    max_depth: usize,
     concurrency: u32,
+    parser: ContentParser,
 }
 
 #[derive(Debug, Clone)]
@@ -36,15 +38,40 @@ impl CrawlResult {
 }
 
 impl Crawler {
-    pub fn new(seed_urls: Vec<String>, max_depth: u32, concurrency: u32) -> Self {
+    pub fn new(seed_urls: Vec<String>, max_depth: usize, concurrency: u32) -> Self {
         Self {
             seed_urls,
             max_depth,
             concurrency,
+            parser: ContentParser::new(),
         }
     }
 
-    pub async fn crawl(&self) -> Result<CrawlResult, Errors> {
+    pub async fn retrieve_content(
+        &self,
+        client: &Client,
+        url: &str,
+        result: &mut CrawlResult,
+    ) -> Result<String, Errors> {
+        let res = client.get(url).send().await?;
+        let status = res.status();
+
+        let resp_content = res.text().await?;
+
+        println!("append {}'s content to result", url);
+        result.append_res(
+            url.to_string(),
+            Response {
+                data: resp_content.clone(),
+                status: Some(status),
+                err: None,
+            },
+        );
+
+        Ok(resp_content)
+    }
+
+    pub async fn crawl(&self, depth: usize) -> Result<CrawlResult, Errors> {
         //todo: implement crawl data from URLs
         /*
             let resp = reqwest::get("https://httpbin.org/ip")
@@ -53,37 +80,67 @@ impl Crawler {
             .await?;
         println!("{resp:#?}");
             */
+        if depth > self.max_depth {
+            return Err(Errors::InvalidDepth(depth, self.max_depth));
+        }
+
         let client = reqwest::Client::new();
-        let mut result = CrawlResult::new((self.max_depth * 10) as usize);
+        let mut result = CrawlResult::new(self.max_depth * 10);
 
         for url in &self.seed_urls {
-            let res = client.get(url.clone()).send().await?;
-            let status = res.status();
+            let resp_content = self.retrieve_content(&client, url, &mut result).await?;
+            let sub_content = self.parser.parse(resp_content)?;
 
-            match res.text().await {
-                Ok(text) => {
-                    result.append_res(
-                        url.to_string(),
-                        Response {
-                            data: text,
-                            status: Some(status),
-                            err: None,
-                        },
-                    );
-                }
-                Err(e) => {
-                    result.append_res(
-                        url.to_string(),
-                        Response {
-                            data: "".to_string(),
-                            status: None,
-                            err: Some(e.to_string()),
-                        },
-                    );
-                }
+            println!("sub_content links: {:?}", sub_content.links);
+
+            let sub_res = self
+                .boxed_crawl_sub(&mut result, sub_content.links, depth - 1)
+                .await;
+
+            match sub_res.await {
+                Ok(v) => {}
+                Err(e) => return Err(e),
             }
         }
 
         Ok(result)
+    }
+
+    pub async fn boxed_crawl_sub<'a, 'b: 'a>(
+        &'a self,
+        result: &'b mut CrawlResult,
+        sub_links: Vec<String>,
+        depth: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Errors>> + 'a>> {
+        Box::pin(self.crawl_sub(result, sub_links, depth))
+    }
+
+    pub async fn crawl_sub(
+        &self,
+        result: &mut CrawlResult,
+        sub_links: Vec<String>,
+        depth: usize,
+    ) -> Result<(), Errors> {
+        if depth <= 0 {
+            return Ok(());
+        }
+
+        if sub_links.len() == 0 {
+            return Ok(());
+        }
+
+        let client = reqwest::Client::new();
+        for link in sub_links {
+            println!("crawling {} .........", link);
+
+            let resp = self.retrieve_content(&client, &link, result).await?;
+            let sub_content = self.parser.parse(resp)?;
+
+            let _ = self
+                .boxed_crawl_sub(result, sub_content.links, depth - 1)
+                .await;
+        }
+
+        Ok(())
     }
 }

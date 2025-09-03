@@ -4,8 +4,8 @@ use thiserror::Error;
 pub enum Errors {
     #[error("craw data failed")]
     CrawDataError(#[from] reqwest::Error),
-    // #[error("the data for key `{0}` is not available")]
-    // Redaction(String),
+    #[error("crawl depth: {0} exceed max_depth: {1}")]
+    InvalidDepth(usize, usize),
     // #[error("invalid header (expected {expected:?}, found {found:?})")]
     // InvalidHeader { expected: String, found: String },
     // #[error("unknown data store error")]
