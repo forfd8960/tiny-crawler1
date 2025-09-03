@@ -6,8 +6,14 @@ use std::collections::HashMap;
 use std::pin::Pin;
 
 #[derive(Debug)]
+pub struct Seed {
+    pub url: String,
+    pub base: String,
+}
+
+#[derive(Debug)]
 pub struct Crawler {
-    seed_urls: Vec<String>,
+    seed_urls: Vec<Seed>,
     max_depth: usize,
     concurrency: u32,
     parser: ContentParser,
@@ -38,7 +44,7 @@ impl CrawlResult {
 }
 
 impl Crawler {
-    pub fn new(seed_urls: Vec<String>, max_depth: usize, concurrency: u32) -> Self {
+    pub fn new(seed_urls: Vec<Seed>, max_depth: usize, concurrency: u32) -> Self {
         Self {
             seed_urls,
             max_depth,
@@ -87,18 +93,20 @@ impl Crawler {
         let client = reqwest::Client::new();
         let mut result = CrawlResult::new(self.max_depth * 10);
 
-        for url in &self.seed_urls {
-            let resp_content = self.retrieve_content(&client, url, &mut result).await?;
-            let sub_content = self.parser.parse(resp_content)?;
+        for seed in &self.seed_urls {
+            let resp_content = self
+                .retrieve_content(&client, &seed.url, &mut result)
+                .await?;
+            let sub_content = self.parser.parse(&resp_content, &seed.base)?;
 
             println!("sub_content links: {:?}", sub_content.links);
 
             let sub_res = self
-                .boxed_crawl_sub(&mut result, sub_content.links, depth - 1)
+                .boxed_crawl_sub(&mut result, sub_content.links, &seed.base, depth - 1)
                 .await;
 
             match sub_res.await {
-                Ok(v) => {}
+                Ok(_) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -110,15 +118,17 @@ impl Crawler {
         &'a self,
         result: &'b mut CrawlResult,
         sub_links: Vec<String>,
+        base_url: &'a str,
         depth: usize,
     ) -> Pin<Box<dyn Future<Output = Result<(), Errors>> + 'a>> {
-        Box::pin(self.crawl_sub(result, sub_links, depth))
+        Box::pin(self.crawl_sub(result, sub_links, base_url, depth))
     }
 
     pub async fn crawl_sub(
         &self,
         result: &mut CrawlResult,
         sub_links: Vec<String>,
+        base_url: &str,
         depth: usize,
     ) -> Result<(), Errors> {
         if depth <= 0 {
@@ -134,10 +144,10 @@ impl Crawler {
             println!("crawling {} .........", link);
 
             let resp = self.retrieve_content(&client, &link, result).await?;
-            let sub_content = self.parser.parse(resp)?;
+            let sub_content = self.parser.parse(&resp, base_url)?;
 
             let _ = self
-                .boxed_crawl_sub(result, sub_content.links, depth - 1)
+                .boxed_crawl_sub(result, sub_content.links, base_url, depth - 1)
                 .await;
         }
 

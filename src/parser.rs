@@ -21,7 +21,7 @@ impl ContentParser {
         }
     }
 
-    pub fn parse(&self, content: String) -> Result<ParsedContent, Errors> {
+    pub fn parse(&self, content: &str, base_url: &str) -> Result<ParsedContent, Errors> {
         let doc = Html::parse_document(&content);
 
         let title = doc
@@ -33,7 +33,13 @@ impl ContentParser {
         let links = doc
             .select(&self.link_selector)
             .filter_map(|el| el.value().attr("href").filter(|url| !url.is_empty()))
-            .map(|v| v.to_string())
+            .map(|v| {
+                if !v.starts_with("https://") {
+                    format!("{}{}", base_url, v)
+                } else {
+                    v.to_string()
+                }
+            })
             .collect();
 
         Ok(ParsedContent { links, title })
@@ -50,10 +56,11 @@ mod tests {
         <title>Hello</title>
         <body>
         <a href="https://github.com/alex">Alex Github</a>
+        <a href="/logout">Logout</a>
         </body>
         </html>"#;
         let p = ContentParser::new();
-        let res = p.parse(html.to_string());
+        let res = p.parse(html, "https://github.com");
         assert!(res.is_ok());
 
         let data = res.unwrap();
@@ -61,6 +68,13 @@ mod tests {
         println!("links: {:?}", data.links);
 
         assert_eq!(data.title, "Hello".to_string());
-        assert_eq!(data.links, ["https://github.com/alex".to_string()].to_vec());
+        assert_eq!(
+            data.links,
+            [
+                "https://github.com/alex".to_string(),
+                "https://github.com/logout".to_string()
+            ]
+            .to_vec()
+        );
     }
 }
