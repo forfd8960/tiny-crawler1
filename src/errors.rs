@@ -6,6 +6,8 @@ pub enum Errors {
     CrawDataError(#[from] reqwest::Error),
     #[error("crawl depth: {0} exceed max_depth: {1}")]
     InvalidDepth(usize, usize),
+    #[error("create file failed")]
+    SaveDataFailed(#[from] std::io::Error),
     // #[error("invalid header (expected {expected:?}, found {found:?})")]
     // InvalidHeader { expected: String, found: String },
     // #[error("unknown data store error")]

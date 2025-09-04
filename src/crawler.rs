@@ -99,8 +99,6 @@ impl Crawler {
                 .await?;
             let sub_content = self.parser.parse(&resp_content, &seed.base)?;
 
-            println!("sub_content links: {:?}", sub_content.links);
-
             let sub_res = self
                 .boxed_crawl_sub(&mut result, sub_content.links, &seed.base, depth - 1)
                 .await;
