@@ -1,4 +1,7 @@
 use thiserror::Error;
+use tokio::sync::mpsc;
+
+use crate::url_queue::Link;
 
 #[derive(Error, Debug)]
 pub enum Errors {
@@ -8,6 +11,9 @@ pub enum Errors {
     InvalidDepth(usize, usize),
     #[error("create file failed")]
     SaveDataFailed(#[from] std::io::Error),
+
+    #[error("send url failed")]
+    SendURL2QueueFailed(#[from] mpsc::error::SendError<Link>),
     // #[error("invalid header (expected {expected:?}, found {found:?})")]
     // InvalidHeader { expected: String, found: String },
     // #[error("unknown data store error")]

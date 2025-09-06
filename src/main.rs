@@ -13,15 +13,9 @@ async fn main() -> Result<(), Errors> {
         base: "https://www.buildwithrs.dev".to_string(),
     });
 
-    let my_crawler = crawler::Crawler::new(seed_urls, 2, 1);
+    let my_crawler = crawler::Crawler::new(seed_urls, 2, 1, "./data");
     // println!("my_crawler: {:?}", my_crawler);
 
     let res = my_crawler.crawl(2).await?;
-
-    let path = Path::new("./data");
-    let store = DataStore::new(path);
-    for (url, resp) in res.data {
-        store.save_data(&url.replace("https://", "").replace("/", "_"), &resp.data)?;
-    }
     Ok(())
 }

@@ -1,9 +1,14 @@
 use crate::errors::Errors;
 use crate::parser::ContentParser;
+use crate::storage::DataStore;
+use crate::storage::Page;
+use crate::url_queue::Link;
+use crate::url_queue::URLQueue;
+use futures::future::join_all;
 use reqwest::Client;
-use reqwest::StatusCode;
-use std::collections::HashMap;
-use std::pin::Pin;
+use std::path::Path;
+use std::sync::Arc;
+use tokio::task;
 
 #[derive(Debug)]
 pub struct Seed {
@@ -15,140 +20,110 @@ pub struct Seed {
 pub struct Crawler {
     seed_urls: Vec<Seed>,
     max_depth: usize,
-    concurrency: u32,
-    parser: ContentParser,
-}
-
-#[derive(Debug, Clone)]
-pub struct Response {
-    pub data: String,               // the response data
-    pub status: Option<StatusCode>, // http response status
-    pub err: Option<String>,        // err info if request failed
-}
-
-#[derive(Debug)]
-pub struct CrawlResult {
-    pub data: HashMap<String, Response>,
-}
-
-impl CrawlResult {
-    pub fn new(cap: usize) -> Self {
-        Self {
-            data: HashMap::with_capacity(cap),
-        }
-    }
-
-    pub fn append_res(&mut self, url: String, resp: Response) {
-        self.data.insert(url, resp);
-    }
+    max_worker: usize,
+    parser: Arc<ContentParser>,
+    page_store: Arc<DataStore>,
+    url_queue: Arc<URLQueue>,
 }
 
 impl Crawler {
-    pub fn new(seed_urls: Vec<Seed>, max_depth: usize, concurrency: u32) -> Self {
+    pub fn new(
+        seed_urls: Vec<Seed>,
+        max_depth: usize,
+        max_worker: usize,
+        store_dir: String,
+    ) -> Self {
         Self {
             seed_urls,
             max_depth,
-            concurrency,
-            parser: ContentParser::new(),
+            max_worker,
+            parser: Arc::new(ContentParser::new()),
+            page_store: Arc::new(DataStore::new(store_dir)),
+            url_queue: Arc::new(URLQueue::new(max_depth, 100 as usize)),
         }
     }
 
-    pub async fn retrieve_content(
-        &self,
-        client: &Client,
-        url: &str,
-        result: &mut CrawlResult,
-    ) -> Result<String, Errors> {
-        let res = client.get(url).send().await?;
-        let status = res.status();
-
-        let resp_content = res.text().await?;
-
-        println!("append {}'s content to result", url);
-        result.append_res(
-            url.to_string(),
-            Response {
-                data: resp_content.clone(),
-                status: Some(status),
-                err: None,
-            },
-        );
-
-        Ok(resp_content)
-    }
-
-    pub async fn crawl(&self, depth: usize) -> Result<CrawlResult, Errors> {
-        //todo: implement crawl data from URLs
-        /*
-            let resp = reqwest::get("https://httpbin.org/ip")
-            .await?
-            .json::<HashMap<String, String>>()
-            .await?;
-        println!("{resp:#?}");
-            */
+    pub async fn crawl(&self, depth: usize) -> Result<(), Errors> {
         if depth > self.max_depth {
             return Err(Errors::InvalidDepth(depth, self.max_depth));
         }
 
-        let client = reqwest::Client::new();
-        let mut result = CrawlResult::new(self.max_depth * 10);
-
         for seed in &self.seed_urls {
-            let resp_content = self
-                .retrieve_content(&client, &seed.url, &mut result)
-                .await?;
-            let sub_content = self.parser.parse(&resp_content, &seed.base)?;
-
-            let sub_res = self
-                .boxed_crawl_sub(&mut result, sub_content.links, &seed.base, depth - 1)
-                .await;
-
-            match sub_res.await {
-                Ok(_) => {}
-                Err(e) => return Err(e),
-            }
+            let link = Link {
+                url: seed.url.clone(),
+                depth: 0,
+            };
+            let _ = self.url_queue.add_url(&link).await?;
         }
 
-        Ok(result)
-    }
+        let mut workers = Vec::new();
 
-    pub async fn boxed_crawl_sub<'a, 'b: 'a>(
-        &'a self,
-        result: &'b mut CrawlResult,
-        sub_links: Vec<String>,
-        base_url: &'a str,
-        depth: usize,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Errors>> + 'a>> {
-        Box::pin(self.crawl_sub(result, sub_links, base_url, depth))
-    }
+        for _ in 0..self.max_worker {
+            let url_queue = Arc::clone(&self.url_queue);
+            let page_store = Arc::clone(&self.page_store);
+            let content_parser = Arc::clone(&self.parser);
 
-    pub async fn crawl_sub(
-        &self,
-        result: &mut CrawlResult,
-        sub_links: Vec<String>,
-        base_url: &str,
-        depth: usize,
-    ) -> Result<(), Errors> {
-        if depth <= 0 {
-            return Ok(());
+            let crawl_task = task::spawn(async move {
+                if let Some(target) = url_queue.get_next_link().await {
+                    process_crawl(&content_parser, &target, &page_store, &url_queue).await;
+                }
+            });
+
+            workers.push(crawl_task);
         }
 
-        if sub_links.len() == 0 {
-            return Ok(());
-        }
-
-        let client = reqwest::Client::new();
-        for link in sub_links {
-            println!("crawling {} .........", link);
-
-            let resp = self.retrieve_content(&client, &link, result).await?;
-            let sub_content = self.parser.parse(&resp, base_url)?;
-
-            let _ = self
-                .boxed_crawl_sub(result, sub_content.links, base_url, depth - 1)
-                .await;
-        }
+        let _ = join_all(workers).await;
 
         Ok(())
     }
+}
+
+pub async fn process_crawl(
+    content_parser: &ContentParser,
+    target: &Link,
+    page_store: &DataStore,
+    url_queue: &URLQueue,
+) {
+    let client = reqwest::Client::new();
+    let res_page = retrieve_page(&client, &content_parser, &target.url, target.depth).await;
+
+    if res_page.is_err() {
+        eprintln!("failed to retrieve page: {}", target.url);
+        return;
+    }
+
+    let page = &res_page.unwrap();
+    let store_page = page_store.save_page(page);
+    if store_page.is_err() {
+        eprintln!(
+            "failed to store page: {}, {:?}",
+            target.url,
+            store_page.err()
+        );
+        return;
+    }
+
+    for url in &page.links {
+        let link = Link {
+            url: url.clone(),
+            depth: page.depth,
+        };
+        if let Err(e) = url_queue.add_url(&link).await {
+            eprintln!("failed to add link: {}, {:?}", url, e);
+        }
+    }
+}
+
+pub async fn retrieve_page(
+    client: &Client,
+    parser: &ContentParser,
+    url_str: &str,
+    depth: usize,
+) -> Result<Page, Errors> {
+    let res = client.get(url_str).send().await?;
+    let resp_content = res.text().await?;
+    let parts: Vec<&str> = url_str.split("/").collect();
+    let page = parser.parse(&resp_content, parts[0], depth)?;
+
+    Ok(page)
 }

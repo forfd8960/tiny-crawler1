@@ -4,28 +4,48 @@ use std::path::Path;
 
 use crate::errors::Errors;
 
-#[derive(Debug)]
-pub struct DataStore<'a> {
-    pub store_dir: &'a Path,
+#[derive(Debug, Clone)]
+pub struct Page {
+    pub title: String,
+    pub content: String,
+    pub links: Vec<String>,
+    pub depth: usize,
 }
 
-impl<'a> DataStore<'a> {
-    pub fn new(dir: &'a Path) -> Self {
+impl Page {
+    pub fn new(title: String, content: String, links: Vec<String>, depth: usize) -> Self {
+        Self {
+            title,
+            content,
+            links,
+            depth,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DataStore {
+    pub store_dir: String,
+}
+
+impl DataStore {
+    pub fn new(dir: String) -> Self {
         Self { store_dir: dir }
     }
 
-    pub fn save_data(&self, file_name: &str, content: &str) -> Result<(), Errors> {
+    pub fn save_page(&self, page: &Page) -> Result<(), Errors> {
         // Ensure the directory exists
+        let path = Path::new(&self.store_dir);
         std::fs::create_dir_all(self.store_dir)?;
 
         // Create the full file path
-        let full_path = Path::new(&self.store_dir).join(file_name);
+        let full_path = Path::new(&self.store_dir).join(page.title.clone());
 
         // Create or open the file
         let mut file = File::create(full_path)?;
 
         // Write content to file
-        file.write_all(content.as_bytes())?;
+        file.write_all(page.content.as_bytes())?;
 
         Ok(())
     }

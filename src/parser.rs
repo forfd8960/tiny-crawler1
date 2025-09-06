@@ -1,4 +1,4 @@
-use crate::errors::Errors;
+use crate::{errors::Errors, storage::Page};
 use scraper::{Html, Selector};
 
 #[derive(Debug)]
@@ -21,7 +21,7 @@ impl ContentParser {
         }
     }
 
-    pub fn parse(&self, content: &str, base_url: &str) -> Result<ParsedContent, Errors> {
+    pub fn parse(&self, content: &str, base_url: &str, depth: usize) -> Result<Page, Errors> {
         let doc = Html::parse_document(&content);
 
         let title = doc
@@ -42,7 +42,12 @@ impl ContentParser {
             })
             .collect();
 
-        Ok(ParsedContent { links, title })
+        Ok(Page {
+            title: title,
+            content: content.to_string(),
+            links,
+            depth,
+        })
     }
 }
 
@@ -60,7 +65,7 @@ mod tests {
         </body>
         </html>"#;
         let p = ContentParser::new();
-        let res = p.parse(html, "https://github.com");
+        let res = p.parse(html, "https://github.com", 0);
         assert!(res.is_ok());
 
         let data = res.unwrap();
