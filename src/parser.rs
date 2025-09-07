@@ -1,4 +1,4 @@
-use crate::{errors::Errors, storage::Page};
+use crate::{errors::Errors, is_valid_url, storage::Page};
 use scraper::{Html, Selector};
 
 #[derive(Debug)]
@@ -21,7 +21,7 @@ impl ContentParser {
         }
     }
 
-    pub fn parse(&self, content: &str, base_url: &str, depth: usize) -> Result<Page, Errors> {
+    pub fn parse(&self, content: &str, _: &str, depth: usize) -> Result<Page, Errors> {
         let doc = Html::parse_document(&content);
 
         let title = doc
@@ -32,14 +32,8 @@ impl ContentParser {
 
         let links = doc
             .select(&self.link_selector)
-            .filter_map(|el| el.value().attr("href").filter(|url| !url.is_empty()))
-            .map(|v| {
-                if !v.starts_with("https://") {
-                    format!("{}{}", base_url, v)
-                } else {
-                    v.to_string()
-                }
-            })
+            .filter_map(|el| el.value().attr("href").filter(|url| is_valid_url(url)))
+            .map(|v| v.to_string())
             .collect();
 
         Ok(Page {

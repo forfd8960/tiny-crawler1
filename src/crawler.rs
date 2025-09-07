@@ -1,4 +1,5 @@
 use crate::errors::Errors;
+use crate::is_valid_url;
 use crate::parser::ContentParser;
 use crate::storage::DataStore;
 use crate::storage::Page;
@@ -6,7 +7,6 @@ use crate::url_queue::Link;
 use crate::url_queue::URLQueue;
 use futures::future::join_all;
 use reqwest::Client;
-use std::path::Path;
 use std::sync::Arc;
 use tokio::task;
 
@@ -32,31 +32,32 @@ impl Crawler {
         max_depth: usize,
         max_worker: usize,
         store_dir: String,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Errors> {
+        let store = DataStore::new(store_dir)?;
+
+        Ok(Self {
             seed_urls,
             max_depth,
             max_worker,
             parser: Arc::new(ContentParser::new()),
-            page_store: Arc::new(DataStore::new(store_dir)),
+            page_store: Arc::new(store),
             url_queue: Arc::new(URLQueue::new(max_depth, 100 as usize)),
-        }
+        })
     }
 
-    pub async fn crawl(&self, depth: usize) -> Result<(), Errors> {
-        if depth > self.max_depth {
-            return Err(Errors::InvalidDepth(depth, self.max_depth));
-        }
-
+    pub async fn crawl(&self) -> Result<(), Errors> {
         for seed in &self.seed_urls {
             let link = Link {
                 url: seed.url.clone(),
-                depth: 0,
+                base: seed.base.clone(),
+                depth: 1,
             };
             let _ = self.url_queue.add_url(&link).await?;
         }
 
         let mut workers = Vec::new();
+
+        let max_depth = self.max_depth;
 
         for _ in 0..self.max_worker {
             let url_queue = Arc::clone(&self.url_queue);
@@ -64,8 +65,27 @@ impl Crawler {
             let content_parser = Arc::clone(&self.parser);
 
             let crawl_task = task::spawn(async move {
-                if let Some(target) = url_queue.get_next_link().await {
-                    process_crawl(&content_parser, &target, &page_store, &url_queue).await;
+                loop {
+                    if let Some(target) = url_queue.get_next_link().await {
+                        println!(
+                            "{} [crawler]crawling {} {}",
+                            "-".repeat(10),
+                            target.url,
+                            "-".repeat(10)
+                        );
+                        if target.depth > max_depth {
+                            break;
+                        }
+
+                        if let Err(e) =
+                            process_crawl(&content_parser, &target, &page_store, &url_queue).await
+                        {
+                            println!("failed to crawl: {:?}, {}", target, e);
+                        }
+                    } else {
+                        println!("No url in the Queue");
+                        break;
+                    }
                 }
             });
 
@@ -83,47 +103,68 @@ pub async fn process_crawl(
     target: &Link,
     page_store: &DataStore,
     url_queue: &URLQueue,
-) {
+) -> Result<(), Errors> {
     let client = reqwest::Client::new();
-    let res_page = retrieve_page(&client, &content_parser, &target.url, target.depth).await;
+    let res_page = retrieve_page(
+        &client,
+        &content_parser,
+        &target.url,
+        &target.base,
+        target.depth,
+    )
+    .await?;
 
-    if res_page.is_err() {
-        eprintln!("failed to retrieve page: {}", target.url);
-        return;
-    }
+    let _ = page_store.save_page(&res_page)?;
+    for url in &res_page.links {
+        if !is_valid_url(&url) {
+            eprintln!("{} is not valid URL", url);
+            continue;
+        }
 
-    let page = &res_page.unwrap();
-    let store_page = page_store.save_page(page);
-    if store_page.is_err() {
-        eprintln!(
-            "failed to store page: {}, {:?}",
-            target.url,
-            store_page.err()
-        );
-        return;
-    }
-
-    for url in &page.links {
         let link = Link {
             url: url.clone(),
-            depth: page.depth,
+            base: target.base.clone(),
+            depth: res_page.depth + 1,
         };
+
+        println!("enqueue url: {:?} into URL Queue", link);
         if let Err(e) = url_queue.add_url(&link).await {
             eprintln!("failed to add link: {}, {:?}", url, e);
         }
     }
+
+    Ok(())
 }
 
 pub async fn retrieve_page(
     client: &Client,
     parser: &ContentParser,
     url_str: &str,
+    base_url: &str,
     depth: usize,
 ) -> Result<Page, Errors> {
     let res = client.get(url_str).send().await?;
     let resp_content = res.text().await?;
-    let parts: Vec<&str> = url_str.split("/").collect();
-    let page = parser.parse(&resp_content, parts[0], depth)?;
+    let page = parser.parse(&resp_content, base_url, depth)?;
 
     Ok(page)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::is_valid_url;
+    use url::Url;
+
+    #[test]
+    fn test_validate_url() {
+        let url = "https:item?id=45109927";
+        assert!(is_valid_url(url));
+
+        let res = Url::parse(url);
+        assert!(res.is_ok());
+
+        let res1 = Url::parse("example.com");
+        println!("res1: {:?}", res1);
+        assert!(res1.is_ok());
+    }
 }

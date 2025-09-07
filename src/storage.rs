@@ -29,15 +29,13 @@ pub struct DataStore {
 }
 
 impl DataStore {
-    pub fn new(dir: String) -> Self {
-        Self { store_dir: dir }
+    pub fn new(dir: String) -> Result<Self, Errors> {
+        let path = Path::new(&dir);
+        std::fs::create_dir_all(path)?;
+        Ok(Self { store_dir: dir })
     }
 
     pub fn save_page(&self, page: &Page) -> Result<(), Errors> {
-        // Ensure the directory exists
-        let path = Path::new(&self.store_dir);
-        std::fs::create_dir_all(self.store_dir)?;
-
         // Create the full file path
         let full_path = Path::new(&self.store_dir).join(page.title.clone());
 
