@@ -8,7 +8,12 @@ use crate::url_queue::URLQueue;
 use futures::future::join_all;
 use reqwest::Client;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::signal;
+use tokio::sync::RwLock;
+use tokio::sync::broadcast;
 use tokio::task;
+use tokio::time::sleep;
 
 #[derive(Debug)]
 pub struct Seed {
@@ -55,6 +60,8 @@ impl Crawler {
             let _ = self.url_queue.add_url(&link).await?;
         }
 
+        let (tx, _) = broadcast::channel::<()>(100);
+
         let mut workers = Vec::new();
 
         let max_depth = self.max_depth;
@@ -63,33 +70,49 @@ impl Crawler {
             let url_queue = Arc::clone(&self.url_queue);
             let page_store = Arc::clone(&self.page_store);
             let content_parser = Arc::clone(&self.parser);
+            let mut recv_stop = tx.subscribe();
 
             let crawl_task = task::spawn(async move {
                 loop {
-                    if let Some(target) = url_queue.get_next_link().await {
-                        println!(
-                            "{} [crawler]crawling {} {}",
-                            "-".repeat(10),
-                            target.url,
-                            "-".repeat(10)
-                        );
-                        if target.depth > max_depth {
-                            break;
-                        }
+                    tokio::select! {
+                            _ = recv_stop.recv() => {
+                                break;
+                            },
+                            _ = sleep(Duration::from_millis(50)) => {
+                                if let Some(target) = url_queue.get_next_link().await {
+                                    println!(
+                                    "{} [crawler]crawling {} {}",
+                                    "-".repeat(10),
+                                    target.url,
+                                    "-".repeat(10)
+                                    );
 
-                        if let Err(e) =
-                            process_crawl(&content_parser, &target, &page_store, &url_queue).await
-                        {
-                            println!("failed to crawl: {:?}, {}", target, e);
+                                    if target.depth > max_depth {
+                                        break;
+                                    }
+
+                                    if let Err(e) =
+                                        process_crawl(&content_parser, &target, &page_store, &url_queue).await
+                                    {
+                                        println!("failed to crawl: {:?}, {}", target, e);
+                                    }
+                            }
                         }
-                    } else {
-                        println!("No url in the Queue");
-                        break;
                     }
                 }
             });
 
             workers.push(crawl_task);
+        }
+
+        match signal::ctrl_c().await {
+            Ok(()) => {
+                println!("Main task: Ctrl+C received, sending shutdown signal...");
+                let _ = tx.send(()); // Send shutdown signal to all sub-tasks
+            }
+            Err(e) => {
+                eprintln!("Main task: Error receiving Ctrl+C: {}", e);
+            }
         }
 
         let _ = join_all(workers).await;

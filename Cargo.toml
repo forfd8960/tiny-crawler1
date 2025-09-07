@@ -10,3 +10,4 @@ thiserror = "2.0.16"
 scraper = "0.24.0"
 futures = "0.3.31"
 url = "2.5.7"
+ctrlc = { version = "3.4", features = ["termination"] }
